@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact build-on-make="true" name="CliffHanger">
+    <output-path>C:/robocode/robots</output-path>
+    <root id="root">
+      <element id="module-output" name="CliffHanger" />
+    </root>
+  </artifact>
+</component>

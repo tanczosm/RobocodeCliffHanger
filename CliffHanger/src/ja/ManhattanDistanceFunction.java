@@ -1,6 +1,6 @@
 package ja;
 
-import ags.utils.dataStructures.trees.thirdGenKD.*;
+import ja.dataStructures.trees.thirdGenKD.*;
 
 public class ManhattanDistanceFunction implements DistanceFunction {
 

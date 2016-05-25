@@ -11,6 +11,6 @@ public class Situation {
 
     public double[] getPoint ()
     {
-        return new double[] { distance };
+        return new double[] { distance / 800d };
     }
 }

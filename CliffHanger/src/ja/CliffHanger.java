@@ -6,11 +6,11 @@ import java.awt.geom.*;     // for Point2D's
 import java.lang.*;         // for Double and Integer objects
 import java.util.ArrayList; // for collection of waves
 import java.awt.*;
-import ags.utils.dataStructures.trees.thirdGenKD.*;
+import ja.dataStructures.trees.thirdGenKD.*;
 
 public class CliffHanger extends AdvancedRobot {
     public static int BINS = 47;
-    public static double _surfStats[] = new double[BINS]; // we'll use 47 bins
+    //public static double _surfStats[] = new double[BINS]; // we'll use 47 bins
     public Point2D.Double _myLocation;     // our bot's location
     public Point2D.Double _enemyLocation;  // enemy bot's location
 
@@ -23,7 +23,7 @@ public class CliffHanger extends AdvancedRobot {
     public DistanceFunction distanceFunction = new ManhattanDistanceFunction();
     public double[] SITUATION_WEIGHTS = {0.1};
 
-    public final static int SITUATION_DIMENSIONS = 6;
+    public final static int SITUATION_DIMENSIONS = 1;
 
     private ArrayList<Situation> _nodeQueue;
     public static KdTree<Situation> situations = new KdTree<Situation>(SITUATION_DIMENSIONS);
@@ -50,6 +50,8 @@ public class CliffHanger extends AdvancedRobot {
         _surfDirections = new ArrayList();
         _surfAbsBearings = new ArrayList();
         _nodeQueue = new ArrayList<Situation>(100);
+
+        ((ManhattanDistanceFunction)distanceFunction).setSituationWeights(SITUATION_WEIGHTS);
 
         setAdjustGunForRobotTurn(true);
         setAdjustRadarForGunTurn(true);
@@ -83,6 +85,19 @@ public class CliffHanger extends AdvancedRobot {
             ew.direction = ((Integer)_surfDirections.get(2)).intValue();
             ew.directAngle = ((Double)_surfAbsBearings.get(2)).doubleValue();
             ew.fireLocation = (Point2D.Double)_enemyLocation.clone(); // last tick
+            ew.surfStats = new double[ew.BINS];
+            ew.situation = new Situation();
+            ew.situation.distance = e.getDistance();
+
+            NearestNeighborIterator<Situation> similarSituationsIterator = situations.getNearestNeighborIterator(ew.situation.getPoint(), 12, distanceFunction);
+
+            int count = 0;
+            while (similarSituationsIterator.hasNext()) {
+                Situation node = similarSituationsIterator.next();
+                ew.surfStats[getFactorIndex(node.guessFactor)]++;
+                count++;
+            }
+            System.out.println("Found " + count + " similar situations");
 
             _enemyWaves.add(ew);
         }
@@ -99,9 +114,85 @@ public class CliffHanger extends AdvancedRobot {
         // gun code would go here...
     }
 
+
+    public Color getShade (double i)
+    {
+        i = 1 - CTUtils.clamp(i, 0.0, 1.0);
+
+        // Heat map is red, orange, yellow, green, cyan, blue
+        Color colors[] = {new Color(255, 20, 0),
+                new Color(255, 112, 8),
+                new Color(255, 245, 0),
+                new Color(45, 255, 0),
+                new Color(0, 228, 255),
+                new Color(0, 74, 128)};
+
+        return colors[(int)CTUtils.clamp(Math.round(i * colors.length), 0, colors.length - 1)];
+    }
+
+    public void drawWaves() {
+
+        Graphics g = getGraphics();
+
+        for (int i = 0; i < _enemyWaves.size(); i++) {
+
+            EnemyWave ew = (EnemyWave)_enemyWaves.get(i);
+
+            Point2D.Double center = ew.fireLocation;
+
+            //int radius = (int)(w.distanceTraveled + w.bulletVelocity);
+
+            double angleDivision = (CTUtils.maxEscapeAngle(ew.bulletVelocity) * 2.0 / (double)BINS);
+
+            int radius = (int)ew.getRadius(getTime());
+
+            g.setColor(new Color(255, 188, 0));
+            if (radius - 40 < center.distance(_myLocation))
+                g.drawOval((int) (center.x - radius), (int) (center.y - radius), radius * 2, radius * 2);
+
+            g.setColor(java.awt.Color.green);
+            int cTime = (int) getTime();
+
+            if (ew.surfStats != null) {
+
+                double max = ew.surfStats[0];
+                for (int p = 0; p < ew.surfStats.length; p++)
+                {
+                    if (ew.surfStats[p] > max)
+                        max = ew.surfStats[p];
+                }
+
+                for (int p = 0; p < ew.surfStats.length; p++) {
+
+                    //float shade = (float) ew.waveGuessFactors[p];
+                    //shade = (float) CTUtils.clamp(shade * 10, 0.2, 1.0);
+                    //g.setColor(new Color(0, shade, 1, 1.0f));
+                    int index = ew.direction >= 0 ? p : BINS-1-p;
+
+                    g.setColor(getShade(ew.surfStats[index]));
+
+                    //System.out.print(shade + " ");
+                    //System.out.println("DA: " + ew.directAngle + ", AD: " + angleDivision + ", MEA: " + ew.maxEscapeAngle);
+                    double pangle = (ew.directAngle ) + (angleDivision * p) - (angleDivision * (BINS / 2));
+
+                    Point2D.Double p2 = CTUtils.project(center, pangle, radius);
+                    Point2D.Double p3 = CTUtils.project(p2, pangle, (int) (ew.bulletVelocity));
+
+//                g.drawOval((int) (p2.x - 1), (int) (p2.y - 1), 2, 2);
+                    g.drawLine((int) p2.getX(), (int) p2.getY(), (int) p3.getX(), (int) p3.getY());
+                }
+            }
+        }
+
+
+    }
+
     public void updateWaves() {
         for (int x = 0; x < _enemyWaves.size(); x++) {
             EnemyWave ew = (EnemyWave)_enemyWaves.get(x);
+
+
+            drawWaves();
 
             ew.distanceTraveled = (getTime() - ew.fireTime) * ew.bulletVelocity;
             if (ew.distanceTraveled >
@@ -153,11 +244,10 @@ public class CliffHanger extends AdvancedRobot {
 // were hit, update our stat array to reflect the danger in that area.
     public void logHit(EnemyWave ew, Point2D.Double targetLocation) {
 
-        Situation s = new Situation();
-        s.distance = targetLocation.distance(ew.fireLocation);
-        s.guessFactor = getFactor(ew, targetLocation);
 
-        situations.addPoint(s.getPoint(), s);
+        ew.situation.guessFactor = getFactor(ew, targetLocation);
+
+        situations.addPoint(ew.situation.getPoint(), ew.situation);
 
         /*
         for (int x = 0; x < BINS; x++) {
@@ -268,7 +358,7 @@ public class CliffHanger extends AdvancedRobot {
     public double checkDanger(EnemyWave surfWave, Point2D.Double position) {
         int index = getFactorIndex(getFactor(surfWave, position));
         double distance = position.distance(surfWave.fireLocation);
-        return _surfStats[index]/distance;
+        return surfWave.surfStats[index]/distance;
     }
 
     public Point2D.Double getBestPoint(EnemyWave surfWave){
@@ -393,15 +483,7 @@ public class CliffHanger extends AdvancedRobot {
     }
 
     // This can be defined as an inner class if you want.
-    class EnemyWave {
-        Point2D.Double fireLocation;
-        long fireTime;
-        double bulletVelocity, directAngle, distanceTraveled;
-        int direction;
-        ArrayList safePoints;
 
-        public EnemyWave() { }
-    }
 
     // CREDIT: Iterative WallSmoothing by Kawigi
 //   - return absolute angle to move at after account for WallSmoothing
