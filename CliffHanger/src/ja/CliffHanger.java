@@ -1,5 +1,6 @@
 package ja;
 
+import cg.RaikoGun;
 import robocode.*;
 import robocode.util.Utils;
 import java.awt.geom.*;     // for Point2D's
@@ -17,11 +18,13 @@ public class CliffHanger extends AdvancedRobot {
     public Point2D.Double _lastGoToPoint;
     public double direction = 1;
 
+    public final boolean MOVEMENT_CHALLENGE = true;
+
     public static int MAX_SELECTED_SITUATIONS = 12;
     public static double KERNEL_DENSITY_BANDWIDTH = 14d;  // defaults to 6.0d
 
     public DistanceFunction distanceFunction = new ManhattanDistanceFunction();
-    public double[] SITUATION_WEIGHTS = {0.1};
+    //public double[] SITUATION_WEIGHTS = {0.1};
 
     public final static int SITUATION_DIMENSIONS = 1;
 
@@ -31,6 +34,12 @@ public class CliffHanger extends AdvancedRobot {
     public ArrayList _enemyWaves;
     public ArrayList _surfDirections;
     public ArrayList _surfAbsBearings;
+
+    public ScannedRobotEvent _lastScan = null;
+    public double _lastVelocity = 0;
+    public int _lastVelocityChange = 0;
+
+    public static RaikoGun _raikoGun;
 
     // We must keep track of the enemy's energy level to detect EnergyDrop,
 // indicating a bullet is fired
@@ -51,22 +60,52 @@ public class CliffHanger extends AdvancedRobot {
         _surfAbsBearings = new ArrayList();
         _nodeQueue = new ArrayList<Situation>(100);
 
-        ((ManhattanDistanceFunction)distanceFunction).setSituationWeights(SITUATION_WEIGHTS);
+        if (_raikoGun == null)
+            _raikoGun = new RaikoGun(this);
+
+        ((ManhattanDistanceFunction)distanceFunction).setSituationWeights(Situation.SITUATION_WEIGHTS);
 
         setAdjustGunForRobotTurn(true);
         setAdjustRadarForGunTurn(true);
 
         do {
             // basic mini-radar code
-            turnRadarRightRadians(Double.POSITIVE_INFINITY);
+            if (!MOVEMENT_CHALLENGE)
+                turnRadarRightRadians(Double.POSITIVE_INFINITY);
+            else
+                _raikoGun.run();
         } while (true);
     }
 
     public void onScannedRobot(ScannedRobotEvent e) {
         _myLocation = new Point2D.Double(getX(), getY());
 
+        if (_lastScan == null)
+            _lastScan = e;
+
+
         double lateralVelocity = getVelocity()*Math.sin(e.getBearingRadians());
         double absBearing = e.getBearingRadians() + getHeadingRadians();
+
+
+        double enemyHeading = getHeadingRadians() + e.getBearingRadians();
+        double relativeHeading = e.getHeadingRadians() - enemyHeading;
+
+        double velocity = e.getVelocity();
+        double x = getX();
+        double y = getY();
+        double absVelocity = Math.abs(velocity);
+        double enemyLateralVelocity = velocity * Math.sin(relativeHeading);
+//        double forwardWallDistance = getWallTries(getHeadingRadians(), lateralVelocity > 0 ? 1 : -1, x, y, 15);
+//        double reverseWallDistance = getWallTries(getHeadingRadians(), -lateralVelocity > 0 ? 1 : -1, x, y, 15);
+        double forwardWallDistance = CTUtils.wallDistance(x, y, e.getDistance(), absBearing, 1);
+        double reverseWallDistance = CTUtils.wallDistance(x, y, e.getDistance(), absBearing, -1);
+
+        _lastVelocityChange++;
+        if (Math.abs(_lastVelocity) - Math.abs(getVelocity()) >= 0.1) {
+            _lastVelocityChange = 0;
+        }
+        _lastVelocity = getVelocity();
 
         setTurnRadarRightRadians(Utils.normalRelativeAngle(absBearing - getRadarHeadingRadians()) * 2);
 
@@ -87,9 +126,18 @@ public class CliffHanger extends AdvancedRobot {
             ew.fireLocation = (Point2D.Double)_enemyLocation.clone(); // last tick
             ew.surfStats = new double[EnemyWave.BINS];
             ew.situation = new Situation();
+            ew.situation.time = ew.fireTime;
             ew.situation.distance = e.getDistance();
+            ew.situation.lateralVelocity = lateralVelocity;
+            ew.situation.forwardWallDistance = forwardWallDistance;
+            ew.situation.reverseWallDistance = reverseWallDistance;
+            ew.situation.timeSinceDecel = Math.min(_lastVelocityChange, 15);
+            ew.situation.weight = 1.0;
 
-            NearestNeighborIterator<Situation> similarSituationsIterator = situations.getNearestNeighborIterator(ew.situation.getPoint(), 24, distanceFunction);
+            System.out.println("Velocity: " + getVelocity() + ", Last velocity change: " + _lastVelocityChange);
+            //System.out.println("FWD: " + forwardWallDistance/Math.PI*180 + ", RWD: " + reverseWallDistance/Math.PI*180);
+
+            NearestNeighborIterator<Situation> similarSituationsIterator = situations.getNearestNeighborIterator(ew.situation.getPoint(), 6, distanceFunction);
 
 
 
@@ -100,11 +148,22 @@ public class CliffHanger extends AdvancedRobot {
                 int index = getFactorIndex(node.guessFactor);
                 int botWidth = getBotWidth(node.distance);
 
+                double weight = node.weight;  // Number gets bigger as time passes
+                //node.weight = Math.max(0, node.weight-0.05);
+
                 for (int i = (int)Math.max(0, index-botWidth); i < (int)Math.min(index+botWidth, EnemyWave.BINS); i++)
-                    ew.surfStats[i] += 1.0;
+                    ew.surfStats[i] += 1.0 * weight;
                 count++;
             }
             System.out.println("Found " + count + " similar situations");
+            if (count == 0)
+            {
+                int index = getFactorIndex(0);
+                int botWidth = getBotWidth(ew.situation.distance);
+
+                for (int i = (int)Math.max(0, index-botWidth); i < (int)Math.min(index+botWidth, EnemyWave.BINS); i++)
+                    ew.surfStats[i] += 1.0;
+            }
 
             _enemyWaves.add(ew);
         }
@@ -119,6 +178,10 @@ public class CliffHanger extends AdvancedRobot {
         doSurfing();
 
         // gun code would go here...
+        if (MOVEMENT_CHALLENGE)
+            _raikoGun.onScannedRobot(e);
+
+        _lastScan = e;
     }
 
     public int getBotWidth (double distance)
@@ -280,25 +343,51 @@ public class CliffHanger extends AdvancedRobot {
         */
     }
 
+    @Override
+    public void onBulletHitBullet(BulletHitBulletEvent e)
+    {
+        handleBulletEvent(e.getHitBullet(), true);
+    }
+
 
     public void onHitByBullet(HitByBulletEvent e) {
+        handleBulletEvent(e.getBullet(), false);
+    }
+
+    public void handleBulletEvent (Bullet bullet, boolean bulletHitBullet)
+    {
         // If the _enemyWaves collection is empty, we must have missed the
         // detection of this wave somehow.
         if (!_enemyWaves.isEmpty()) {
             Point2D.Double hitBulletLocation = new Point2D.Double(
-                    e.getBullet().getX(), e.getBullet().getY());
+                    bullet.getX(), bullet.getY());
             EnemyWave hitWave = null;
 
             // look through the EnemyWaves, and find one that could've hit us.
             for (int x = 0; x < _enemyWaves.size(); x++) {
                 EnemyWave ew = (EnemyWave)_enemyWaves.get(x);
 
-                if (Math.abs(ew.distanceTraveled -
-                        _myLocation.distance(ew.fireLocation)) < 50
-                        && Math.abs(bulletVelocity(e.getBullet().getPower())
-                        - ew.bulletVelocity) < 0.001) {
-                    hitWave = ew;
-                    break;
+                if (bulletHitBullet) {
+                    if (Math.abs(ew.distanceTraveled -
+                            _myLocation.distance(ew.fireLocation)) < 50
+                            && Math.abs(bulletVelocity(bullet.getPower())
+                            - ew.bulletVelocity) < 0.001) {
+                        hitWave = ew;
+                        break;
+                    }
+                }
+                else
+                {
+                    Point2D.Double pt = new Point2D.Double(bullet.getX(), bullet.getY());
+
+                    if (Math.abs(ew.distanceTraveled -
+                            pt.distance(ew.fireLocation)) < 50
+                            && Math.abs(bulletVelocity(bullet.getPower())
+                            - ew.bulletVelocity) < 0.001) {
+                        hitWave = ew;
+                        break;
+                    }
+
                 }
             }
 
@@ -363,7 +452,7 @@ public class CliffHanger extends AdvancedRobot {
 
             if (predictedPosition.distance(surfWave.fireLocation) - 20 <
                     surfWave.distanceTraveled + (counter * surfWave.bulletVelocity)
-                //   + surfWave.bulletVelocity
+                   + surfWave.bulletVelocity
                     ) {
                 intercepted = true;
             }
@@ -382,8 +471,29 @@ public class CliffHanger extends AdvancedRobot {
         return surfWave.surfStats[index]/distance;
     }
 
-    public double checkDangerSpan(EnemyWave surfWave,  ArrayList forwardPoints, int center, int botWidth)
+    public double checkDangerSpan(EnemyWave surfWave,  ArrayList<Point2D.Double> forwardPoints, int center, int botWidth)
     {
+        /*
+        Point2D.Double position = (Point2D.Double)(forwardPoints.get(center));
+        double distance = position.distance(surfWave.fireLocation);
+        double dangerSum = 0;
+        double count = 0;
+
+
+        for (Point2D.Double pt : forwardPoints)
+        {
+            System.out.println("dist: " + pt.distance(position));
+            if (pt.distance(position) <= botWidth)
+            {
+                int idx = getFactorIndex(getFactor(surfWave, pt));
+                dangerSum += surfWave.surfStats[idx];
+                count++;
+            }
+        }
+        System.out.println("danger check with botWidth: " + botWidth + ", dangerSum: " + dangerSum + ", count: " + count);
+
+        return dangerSum; // / count / distance;
+        */
         Point2D.Double position = (Point2D.Double)(forwardPoints.get(center));
         int index = getFactorIndex(getFactor(surfWave, position));
         double distance = position.distance(surfWave.fireLocation);
@@ -394,34 +504,47 @@ public class CliffHanger extends AdvancedRobot {
             dangerSum += surfWave.surfStats[index];
             count++;
         }
+        System.out.println("danger check with botWidth: " + botWidth + ", dangerSum: " + dangerSum + ", count: " + count);
+        return dangerSum;// / distance;
 
-        return dangerSum / count / distance;
     }
 
     public Point2D.Double getBestPoint(EnemyWave surfWave){
         if(surfWave.safePoints == null){
-            ArrayList forwardPoints = predictPositions(surfWave, 1);
-            ArrayList reversePoints = predictPositions(surfWave, -1);
+            ArrayList<Point2D.Double> forwardPoints = predictPositions(surfWave, 1);
+            ArrayList<Point2D.Double> reversePoints = predictPositions(surfWave, -1);
             int FminDangerIndex = 0;
             int RminDangerIndex = 0;
             int botWidth = 0;
             double FminDanger = Double.POSITIVE_INFINITY;
             double RminDanger = Double.POSITIVE_INFINITY;
+            double FDangerSum = 0;
+            double RDangerSum = 0;
+            System.out.println("Checking forward points..");
             for(int i = 0, k = forwardPoints.size(); i < k; i++){
                 Point2D.Double center = (Point2D.Double)(forwardPoints.get(i));
                 botWidth = getBotWidth(center.distance(surfWave.fireLocation));
                 double thisDanger = checkDangerSpan(surfWave, forwardPoints, i, botWidth ); // checkDanger(surfWave, (Point2D.Double)(forwardPoints.get(i)));
+
+                FDangerSum += thisDanger;
+
                 if(thisDanger <= FminDanger){
+
                     FminDangerIndex = i;
                     FminDanger = thisDanger;
                 }
             }
+            System.out.println("Checking reverse points..");
+
             for(int i = 0, k = reversePoints.size(); i < k; i++){
                 Point2D.Double center = (Point2D.Double)(reversePoints.get(i));
                 botWidth = getBotWidth(center.distance(surfWave.fireLocation));
 
                 double thisDanger = checkDangerSpan(surfWave, reversePoints, i, botWidth ); // checkDanger(surfWave, (Point2D.Double)(reversePoints.get(i)));
+
+                RDangerSum += thisDanger;
                 if(thisDanger <= RminDanger){
+
                     RminDangerIndex = i;
                     RminDanger = thisDanger;
                 }
@@ -429,13 +552,32 @@ public class CliffHanger extends AdvancedRobot {
             ArrayList bestPoints;
             int minDangerIndex;
 
+            System.out.println("FminDanger: " + FminDanger + ", RminDanger: " + RminDanger);
+
+
+
             if(FminDanger < RminDanger ){
                 bestPoints = forwardPoints;
                 minDangerIndex = FminDangerIndex;
             }
-            else {
+            else if (FminDanger > RminDanger ) {
                 bestPoints = reversePoints;
                 minDangerIndex = RminDangerIndex;
+            }
+            else
+            {
+                // All this considered equal, go to the less dangerous side
+                if (FDangerSum < RDangerSum)
+                {
+                    bestPoints = forwardPoints;
+                    minDangerIndex = FminDangerIndex;
+                }
+                else
+                {
+                    bestPoints = reversePoints;
+                    minDangerIndex = RminDangerIndex;
+                }
+
             }
 
             Point2D.Double bestPoint = (Point2D.Double)bestPoints.get(minDangerIndex);
@@ -454,10 +596,12 @@ public class CliffHanger extends AdvancedRobot {
         if(surfWave.safePoints.size() > 1)
             surfWave.safePoints.remove(0);
 
+        Graphics g = getGraphics();
 
         if(surfWave.safePoints.size() >= 1){
             for(int i = 0,k=surfWave.safePoints.size(); i < k; i++){
                 Point2D.Double goToPoint = (Point2D.Double)surfWave.safePoints.get(i);
+                g.drawOval((int)goToPoint.x-1, (int)goToPoint.y-1, 2,2);
                 if(goToPoint.distanceSq(_myLocation) > 20*20*1.1)
                     //if it's not 20 units away we won't reach max velocity
                     return goToPoint;
@@ -586,6 +730,27 @@ public class CliffHanger extends AdvancedRobot {
             robot.setAhead(100);
         }
     }
+
+    public double getWallTries(double heading, double dir, double x, double y, double distance){
+
+        Graphics2D g = getGraphics();
+        double wallIncrement = 0.0407d * dir;
+        double eHeading = heading;
+        double nextX = 0;
+        double nextY = 0;
+        double wallTries = -1;
+        System.out.println("x: " + x + " y: " + y + " heading: " + heading);
+        do{
+            eHeading += wallIncrement;
+            nextX = x + Math.sin(eHeading) * distance;
+            nextY = y + Math.cos(eHeading) * distance;
+            g.drawOval((int)nextX, (int)nextY, 2, 2);
+            wallTries++;
+        }while(_fieldRect.contains(nextX, nextY) && wallTries < 20);
+
+        return wallTries;
+    }
+
 
     /*
     public void onPaint(java.awt.Graphics2D g) {

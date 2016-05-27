@@ -5,7 +5,7 @@ import java.util.ArrayList;
 
 class EnemyWave {
 
-    public final static int BINS = 47;
+    public final static int BINS = 97;
 
     Point2D.Double fireLocation;
     long fireTime;
